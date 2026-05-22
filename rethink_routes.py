@@ -148,7 +148,7 @@ ZIP_OVERRIDES = {
 # Hard-coded lat/lon overrides for addresses the geocoder gets wrong.
 # Key: (addr1.strip().lower(), zipcode)  Value: (lat, lon)
 # Add entries here when a geocoding error is confirmed; no API call is made for these.
-ADDRESS_OVERRIDES: dict[tuple, tuple] = {
+ADDRESS_OVERRIDES = {
     # "1 River Place" geocodes to Yonkers — hard-coded to the correct NYC location.
     # Verify coordinates and update zipcode if needed.
     # ("1 river place", "10036"): (40.7589, -74.0023),

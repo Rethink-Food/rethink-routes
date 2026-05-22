@@ -74,7 +74,7 @@ def _authed() -> bool:
 
 # ── Day-parsing helper ────────────────────────────────────────────────────────
 
-_DAY_ALIASES: dict[str, str] = {
+_DAY_ALIASES = {
     "mon": "Monday",   "monday": "Monday",
     "tue": "Tuesday",  "tues": "Tuesday",  "tuesday": "Tuesday",
     "wed": "Wednesday","wednesday": "Wednesday",
@@ -89,7 +89,7 @@ def _parse_preferred_days(avail_str: str) -> list:
     Returns e.g. ['Monday', 'Thursday'].  Unknown tokens are silently skipped.
     """
     parts = re.split(r"[,&/\s]+", avail_str.strip())
-    days: list[str] = []
+    days = []
     for p in parts:
         key = p.strip().lower().rstrip(".")
         d = _DAY_ALIASES.get(key)
@@ -109,41 +109,59 @@ def _cell(val) -> str:
 
 
 def parse_excel(fileobj):
-    """Parse a member-list Excel file. Uses pandas for robust row reading."""
-    import pandas as pd
-
+    """Parse a member-list Excel file using openpyxl (default mode, NOT read_only)."""
     try:
-        # Buffer all bytes first — some upload streams don't support full seeking
         raw = fileobj.read() if hasattr(fileobj, "read") else fileobj
-        df = pd.read_excel(io.BytesIO(raw), dtype=str, engine="openpyxl")
+        wb = openpyxl.load_workbook(io.BytesIO(raw), data_only=True)
+        ws = wb.active
     except Exception as exc:
         return None, [f"Could not read file: {exc}"]
 
-    # Normalise column headers (strip whitespace)
-    df.columns = [str(c).strip() for c in df.columns]
+    # Read header row -> column index map
+    rows_iter = ws.iter_rows(values_only=True)
+    try:
+        header_raw = next(rows_iter)
+    except StopIteration:
+        wb.close()
+        return None, ["Spreadsheet has no header row"]
+
+    headers = [str(h).strip() if h is not None else "" for h in header_raw]
+    col = {}
+    for i, h in enumerate(headers):
+        col[h] = i
 
     required = ["Member ID", "Box Size", "Address Line 1", "City", "State",
                 "Zip", "Phone Number", "Delivery Instructions", "Status"]
-    missing = [c for c in required if c not in df.columns]
+    missing = [c for c in required if c not in col]
     if missing:
+        wb.close()
         return None, [f"Missing columns in spreadsheet: {missing}"]
 
     # Case-insensitive lookup for optional columns
-    _col_lower = {c.lower(): c for c in df.columns}
+    _col_lower = {h.lower(): h for h in headers}
     twice_col  = _col_lower.get("twice delivery")
     route_col  = _col_lower.get("route")
-
-    # Filter to active rows only
-    df = df[df["Status"].str.strip().str.lower() == "active"].copy()
+    has_addr2  = "Address Line 2" in col
+    has_allergens = "Meal Preferences/Allergens" in col
+    has_avail  = "Available Delivery Days" in col
+    unnamed_cols = [h for h in headers if h.startswith("Unnamed:")]
 
     stops, flags = [], []
-    for _, row in df.iterrows():
+    for row_vals in rows_iter:
         def g(col_name, default=""):
-            return _cell(row.get(col_name, default))
+            idx = col.get(col_name)
+            if idx is None or idx >= len(row_vals):
+                return default
+            return _cell(row_vals[idx])
+
+        # Only process Active rows
+        status = g("Status")
+        if status.lower() != "active":
+            continue
 
         zipcode = g("Zip").replace(".0", "").zfill(5)
         addr1   = g("Address Line 1")
-        addr2   = g("Address Line 2") if "Address Line 2" in df.columns else ""
+        addr2   = g("Address Line 2") if has_addr2 else ""
         city    = g("City")
         state   = g("State")
 
@@ -157,13 +175,11 @@ def parse_excel(fileobj):
         if not _addr1_has_location:
             display_addr += f", {city}, {state} {zipcode}"
 
-        allergens  = g("Meal Preferences/Allergens") if "Meal Preferences/Allergens" in df.columns else ""
-        avail      = g("Available Delivery Days")    if "Available Delivery Days"    in df.columns else ""
+        allergens  = g("Meal Preferences/Allergens") if has_allergens else ""
+        avail      = g("Available Delivery Days") if has_avail else ""
 
         # Collect any freeform notes from unnamed extra columns
-        notes_raw = " | ".join(filter(None, [
-            g(c) for c in df.columns if c.startswith("Unnamed:")
-        ]))
+        notes_raw = " | ".join(filter(None, [g(c) for c in unnamed_cols]))
 
         flag = ""
         if "cancel" in notes_raw.lower():
@@ -214,6 +230,7 @@ def parse_excel(fileobj):
         if flag:
             flags.append(f"Member {member_id} ({display_addr}): {flag}")
 
+    wb.close()
     return stops, flags
 
 
@@ -426,7 +443,7 @@ def run_generation(all_stops, all_flags, distance_cap=MAX_ROUTE_MILES, contact_n
 
     # Tracks which (letter, day) each household address has already been assigned to.
     # Key: addr1.strip().lower()
-    addr_assigned: dict[str, list[tuple]] = {}
+    addr_assigned = {}
 
     def _day_gap(day_a: str, day_b: str) -> int:
         return abs(DAY_ORDER.get(day_a, -99) - DAY_ORDER.get(day_b, -99))
@@ -452,7 +469,7 @@ def run_generation(all_stops, all_flags, distance_cap=MAX_ROUTE_MILES, contact_n
         return None
 
     # Pre-build borough → route list for fast fallback lookups
-    borough_routes: dict[str, list] = {}
+    borough_routes = {}
     for l, n, b, d, z in ROUTES:
         borough_routes.setdefault(b, []).append((l, n, b, d))
 
@@ -617,7 +634,7 @@ def run_generation(all_stops, all_flags, distance_cap=MAX_ROUTE_MILES, contact_n
         })
 
     # Build double-delivery summary (members appearing in two routes)
-    seen_twice: dict[str, list] = {}
+    seen_twice = {}
     for ro in results:
         for s in ro["stops"]:
             if s.get("delivery_type"):
@@ -652,7 +669,7 @@ def run_audit(results, kitchen_rows, flags, double_deliveries, distance_cap):
 
     status values: 'pass' | 'warn' | 'fail' | 'info'
     """
-    checks: list[dict] = []
+    checks = []
 
     def _add(status, check, detail=""):
         checks.append({"check": check, "status": status, "detail": detail})
@@ -738,9 +755,9 @@ def run_audit(results, kitchen_rows, flags, double_deliveries, distance_cap):
         _add("pass", "Member flags", "No individual member flags")
 
     # 9. Duplicate member IDs within a single route (excluding intentional twice-weekly)
-    dupes: list[str] = []
+    dupes = []
     for r in results:
-        seen: dict[str, int] = {}
+        seen = {}
         for s in r["stops"]:
             if s.get("delivery_type"):
                 continue  # First/Second Delivery duplicates are expected
