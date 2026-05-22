@@ -135,10 +135,15 @@ def parse_excel(fileobj):
         city    = str(row[col["City"]]   or "").strip()
         state   = str(row[col["State"]]  or "").strip()
 
+        # Build display address, avoiding duplicate city/state/zip if addr1 already has them
+        _addr1_has_location = bool(
+            re.search(r"\bNY\b", addr1, re.IGNORECASE) or re.search(r"\b\d{5}\b", addr1)
+        )
         display_addr = addr1
         if addr2 and addr2.lower() not in ("none", ""):
             display_addr += f", {addr2}"
-        display_addr += f", {city}, {state} {zipcode}"
+        if not _addr1_has_location:
+            display_addr += f", {city}, {state} {zipcode}"
 
         allergens = str(row[col["Meal Preferences/Allergens"]] or "").strip() \
             if "Meal Preferences/Allergens" in col else ""
@@ -346,18 +351,19 @@ def _geocode_all(all_stops, geocache, geolocator, zip_to_routes):
             gmaps = googlemaps.Client(key=api_key)
 
             def _geocode_query(stop):
-                """Build a clean geocode query.
+                """Build the cleanest possible geocode query.
 
-                Some spreadsheets embed city/state/ZIP in Address Line 1
-                (e.g. '150-15 Hillside Ave., Jamaica, NY 11432'). Appending
-                location info again produces a malformed query that Google Maps
-                can't resolve. If addr1 already contains 'NY' or a 5-digit ZIP
-                we use it as-is; otherwise we append the known location data.
+                Address Line 1 in the spreadsheet can contain extra noise:
+                  - Full address already: '150-15 Hillside Ave., Jamaica, NY 11432'
+                  - Access notes:         '338 Beach 66th St., Front Door: Apt 2, ...'
+                  - Neighbourhood suffix: '40-75 Junction Blvd, Apt. 2, Corona, NY'
+
+                Strategy: always take just the street portion (everything before
+                the first comma) and append the known ZIP. This gives Google Maps
+                the minimal, unambiguous query it needs.
                 """
-                addr1 = stop["addr1"]
-                if re.search(r"\bNY\b", addr1, re.IGNORECASE) or re.search(r"\b\d{5}\b", addr1):
-                    return addr1
-                return f"{addr1}, New York, NY {stop['zipcode']}"
+                street = stop["addr1"].split(",")[0].strip()
+                return f"{street}, New York, NY {stop['zipcode']}"
 
             def _google_one(stop):
                 key = (stop["addr1"], stop["zipcode"])
