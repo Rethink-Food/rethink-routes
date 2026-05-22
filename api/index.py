@@ -110,12 +110,17 @@ def _cell(val) -> str:
 
 def parse_excel(fileobj):
     """Parse a member-list Excel file using openpyxl (default mode, NOT read_only)."""
+    _debug = {}
     try:
         raw = fileobj.read() if hasattr(fileobj, "read") else fileobj
+        _debug["file_bytes"] = len(raw)
         wb = openpyxl.load_workbook(io.BytesIO(raw), data_only=True)
         ws = wb.active
+        _debug["max_row"] = ws.max_row
+        _debug["max_col"] = ws.max_column
+        _debug["sheet_title"] = ws.title
     except Exception as exc:
-        return None, [f"Could not read file: {exc}"]
+        return None, [f"Could not read file: {exc}"], {}
 
     # Read header row -> column index map
     rows_iter = ws.iter_rows(values_only=True)
@@ -123,7 +128,7 @@ def parse_excel(fileobj):
         header_raw = next(rows_iter)
     except StopIteration:
         wb.close()
-        return None, ["Spreadsheet has no header row"]
+        return None, ["Spreadsheet has no header row"], _debug
 
     headers = [str(h).strip() if h is not None else "" for h in header_raw]
     col = {}
@@ -135,7 +140,7 @@ def parse_excel(fileobj):
     missing = [c for c in required if c not in col]
     if missing:
         wb.close()
-        return None, [f"Missing columns in spreadsheet: {missing}"]
+        return None, [f"Missing columns in spreadsheet: {missing}"], _debug
 
     # Case-insensitive lookup for optional columns
     _col_lower = {h.lower(): h for h in headers}
@@ -147,7 +152,11 @@ def parse_excel(fileobj):
     unnamed_cols = [h for h in headers if h.startswith("Unnamed:")]
 
     stops, flags = [], []
+    _total_rows = 0
+    _active_rows = 0
+    _skipped_statuses = {}
     for row_vals in rows_iter:
+        _total_rows += 1
         def g(col_name, default=""):
             idx = col.get(col_name)
             if idx is None or idx >= len(row_vals):
@@ -157,7 +166,10 @@ def parse_excel(fileobj):
         # Only process Active rows
         status = g("Status")
         if status.lower() != "active":
+            st = status.lower() or "(empty)"
+            _skipped_statuses[st] = _skipped_statuses.get(st, 0) + 1
             continue
+        _active_rows += 1
 
         zipcode = g("Zip").replace(".0", "").zfill(5)
         addr1   = g("Address Line 1")
@@ -231,7 +243,11 @@ def parse_excel(fileobj):
             flags.append(f"Member {member_id} ({display_addr}): {flag}")
 
     wb.close()
-    return stops, flags
+    _debug["total_data_rows"] = _total_rows
+    _debug["active_rows"] = _active_rows
+    _debug["stops_produced"] = len(stops)
+    _debug["skipped_statuses"] = _skipped_statuses
+    return stops, flags, _debug
 
 
 def _build_summary_lines(route_info, contact, total_members):
@@ -871,9 +887,9 @@ def upload():
     file = request.files.get("file")
     if not file:
         return jsonify({"error": "No file provided"}), 400
-    stops, flags = parse_excel(file)
+    stops, flags, _debug = parse_excel(file)
     if stops is None:
-        return jsonify({"error": flags[0] if flags else "Failed to parse file"}), 400
+        return jsonify({"error": flags[0] if flags else "Failed to parse file", "debug": _debug}), 400
     cache       = load_cache()
     new_count   = sum(1 for s in stops if (s["addr1"], s["zipcode"]) not in cache)
     twice_count = sum(1 for s in stops if s.get("delivery_type") == "Second Delivery")
@@ -886,7 +902,8 @@ def upload():
         _store[parse_id]["prev_assignments"] = pending
     session["parse_id"] = parse_id
     return jsonify({"count": len(stops), "flags": flags,
-                    "new_count": new_count, "twice_count": twice_count})
+                    "new_count": new_count, "twice_count": twice_count,
+                    "debug": _debug})
 
 
 @app.route("/generate", methods=["POST"])
