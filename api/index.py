@@ -100,42 +100,52 @@ def _parse_preferred_days(avail_str: str) -> list:
 
 # ── Pure helpers (ported from app.py) ─────────────────────────────────────────
 
-def parse_excel(fileobj):
-    # read_only=True can truncate early on files with stale dimension metadata
-    # (common with Google Sheets exports). Load fully to guarantee all rows are read.
-    wb = openpyxl.load_workbook(fileobj, data_only=True)
-    ws = wb.worksheets[0]
-    rows = list(ws.iter_rows(values_only=True))
-    wb.close()
+def _cell(val) -> str:
+    """Safely coerce an Excel cell value to a stripped string."""
+    if val is None:
+        return ""
+    s = str(val).strip()
+    return "" if s.lower() in ("nan", "none") else s
 
-    headers = rows[0]
-    col = {h: i for i, h in enumerate(headers) if h is not None}
+
+def parse_excel(fileobj):
+    """Parse a member-list Excel file. Uses pandas for robust row reading."""
+    import pandas as pd
+
+    try:
+        df = pd.read_excel(fileobj, dtype=str, engine="openpyxl")
+    except Exception as exc:
+        return None, [f"Could not read file: {exc}"]
+
+    # Normalise column headers (strip whitespace)
+    df.columns = [str(c).strip() for c in df.columns]
 
     required = ["Member ID", "Box Size", "Address Line 1", "City", "State",
                 "Zip", "Phone Number", "Delivery Instructions", "Status"]
-    missing = [c for c in required if c not in col]
+    missing = [c for c in required if c not in df.columns]
     if missing:
         return None, [f"Missing columns in spreadsheet: {missing}"]
 
     # Case-insensitive lookup for optional columns
-    _col_lower = {k.lower(): k for k in col}
-    twice_col  = _col_lower.get("twice delivery")   # "Yes"/"No"
-    route_col  = _col_lower.get("route")            # single letter, e.g. "A"
+    _col_lower = {c.lower(): c for c in df.columns}
+    twice_col  = _col_lower.get("twice delivery")
+    route_col  = _col_lower.get("route")
+
+    # Filter to active rows only
+    df = df[df["Status"].str.strip().str.lower() == "active"].copy()
 
     stops, flags = [], []
-    for row in rows[1:]:
-        row = tuple(row) + (None,) * max(0, len(headers) - len(row))
-        status = str(row[col["Status"]] or "").strip().lower()
-        if status != "active":
-            continue
+    for _, row in df.iterrows():
+        def g(col_name, default=""):
+            return _cell(row.get(col_name, default))
 
-        zipcode = str(row[col["Zip"]] or "").replace(".0", "").strip().zfill(5)
-        addr1   = str(row[col["Address Line 1"]] or "").strip()
-        addr2   = str(row[col["Address Line 2"]] or "").strip() if "Address Line 2" in col else ""
-        city    = str(row[col["City"]]   or "").strip()
-        state   = str(row[col["State"]]  or "").strip()
+        zipcode = g("Zip").replace(".0", "").zfill(5)
+        addr1   = g("Address Line 1")
+        addr2   = g("Address Line 2") if "Address Line 2" in df.columns else ""
+        city    = g("City")
+        state   = g("State")
 
-        # Build display address, avoiding duplicate city/state/zip if addr1 already has them
+        # Build display address — skip city/state/ZIP if addr1 already has them
         _addr1_has_location = bool(
             re.search(r"\bNY\b", addr1, re.IGNORECASE) or re.search(r"\b\d{5}\b", addr1)
         )
@@ -145,13 +155,12 @@ def parse_excel(fileobj):
         if not _addr1_has_location:
             display_addr += f", {city}, {state} {zipcode}"
 
-        allergens = str(row[col["Meal Preferences/Allergens"]] or "").strip() \
-            if "Meal Preferences/Allergens" in col else ""
-        avail = str(row[col["Available Delivery Days"]] or "").strip() \
-            if "Available Delivery Days" in col else ""
+        allergens  = g("Meal Preferences/Allergens") if "Meal Preferences/Allergens" in df.columns else ""
+        avail      = g("Available Delivery Days")    if "Available Delivery Days"    in df.columns else ""
+
+        # Collect any freeform notes from unnamed extra columns
         notes_raw = " | ".join(filter(None, [
-            str(row[col[c]] or "").strip()
-            for c in ["Unnamed: 13", "Unnamed: 14", "Unnamed: 15"] if c in col
+            g(c) for c in df.columns if c.startswith("Unnamed:")
         ]))
 
         flag = ""
@@ -162,11 +171,10 @@ def parse_excel(fileobj):
         if allergens and allergens.lower() not in ("none", ""):
             flag = (flag + " | " if flag else "") + f"Allergen: {allergens}"
 
-        member_id      = str(row[col["Member ID"]] or "").replace(".0", "")
-        twice_delivery = twice_col and str(row[col[twice_col]] or "").strip().lower() == "yes"
-        assigned_route = str(row[col[route_col]] or "").strip().upper() if route_col else ""
+        member_id      = g("Member ID").replace(".0", "")
+        twice_delivery = twice_col and g(twice_col).lower() == "yes"
+        assigned_route = g(route_col).upper() if route_col else ""
 
-        # Parse preferred delivery days from the "Available Delivery Days" column
         pref_days = _parse_preferred_days(avail) if twice_delivery else []
 
         base_stop = {
@@ -177,25 +185,23 @@ def parse_excel(fileobj):
             "state":                 state,
             "zipcode":               zipcode,
             "display_addr":          display_addr,
-            "phone":                 str(row[col["Phone Number"]] or "").strip(),
-            "box_size":              clean_box(row[col["Box Size"]]),
+            "phone":                 g("Phone Number"),
+            "box_size":              clean_box(g("Box Size")),
             "allergens":             allergens,
-            "delivery_instructions": str(row[col["Delivery Instructions"]] or "").strip(),
+            "delivery_instructions": g("Delivery Instructions"),
             "available_days":        avail,
             "notes":                 notes_raw,
             "flag":                  flag,
             "latlon":                None,
-            "delivery_type":         "",          # "First Delivery" | "Second Delivery" | ""
+            "delivery_type":         "",
             "assigned_route":        assigned_route,
-            "preferred_day":         "",          # set for twice-weekly stops
+            "preferred_day":         "",
         }
 
         if twice_delivery:
-            # First delivery: honour manual assignment; prefer first available day
             stops.append({**base_stop,
                           "delivery_type": "First Delivery",
                           "preferred_day": pref_days[0] if len(pref_days) > 0 else ""})
-            # Second delivery: auto-assign; prefer second available day
             stops.append({**base_stop,
                           "delivery_type":  "Second Delivery",
                           "assigned_route": "",
@@ -203,7 +209,6 @@ def parse_excel(fileobj):
         else:
             stops.append(base_stop)
 
-        # Add flag once per member regardless of delivery count
         if flag:
             flags.append(f"Member {member_id} ({display_addr}): {flag}")
 
