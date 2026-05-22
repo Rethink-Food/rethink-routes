@@ -17,10 +17,8 @@
     Previous week's assignments
     <span style="font-weight:400; color:var(--muted);"> (optional .csv)</span>
   </span>
-  <input type="file" id="assignments-input" accept=".csv" {% if parsed_count == 0 %}disabled{% endif %}>
-  <div id="assignments-status" class="sidebar-caption" style="min-height:1.2em;">
-    {% if parsed_count == 0 %}<span style="color:var(--muted);">Upload member list first</span>{% endif %}
-  </div>
+  <input type="file" id="assignments-input" accept=".csv">
+  <div id="assignments-status" class="sidebar-caption" style="min-height:1.2em;"></div>
 
   <hr class="divider">
 
@@ -164,12 +162,6 @@
           + (newAddresses > 0 ? ` · ${newAddresses} new addresses, ${cached} cached` : ' · all addresses cached');
         uploadStatus.style.color = 'var(--accent)';
         generateBtn.disabled = false;
-        // Enable the assignments input now that a member list is loaded
-        assignmentsInput.disabled = false;
-        if (!assignmentsInput.files.length) {
-          assignStatus.textContent = 'Have last week's file? Upload it to preserve assignments.';
-          assignStatus.style.color = 'var(--muted)';
-        }
       }
     } catch (e) {
       uploadStatus.textContent = 'Upload failed — try again.';

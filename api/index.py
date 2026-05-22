@@ -749,12 +749,14 @@ def index():
 
 @app.route("/upload-assignments", methods=["POST"])
 def upload_assignments():
-    """Parse a previous week's Route Assignments CSV and stash it in the parse store."""
+    """Parse a previous week's Route Assignments CSV.
+
+    Can be uploaded before or after the member list — if no member list
+    is loaded yet the assignments are held in the session and applied
+    automatically once the member list arrives.
+    """
     if not _authed():
         return jsonify({"error": "Not authenticated"}), 401
-    parse_id = session.get("parse_id")
-    if not parse_id or parse_id not in _store:
-        return jsonify({"error": "Upload a member list first, then load assignments."}), 400
     file = request.files.get("file")
     if not file:
         return jsonify({"error": "No file provided"}), 400
@@ -771,7 +773,14 @@ def upload_assignments():
     except Exception as exc:
         return jsonify({"error": f"Could not parse assignments file: {exc}"}), 400
 
-    _store[parse_id]["prev_assignments"] = assignments
+    parse_id = session.get("parse_id")
+    if parse_id and parse_id in _store:
+        # Member list already loaded — attach directly
+        _store[parse_id]["prev_assignments"] = assignments
+    else:
+        # Member list not yet loaded — hold in session until it arrives
+        session["pending_assignments"] = assignments
+
     return jsonify({"count": len(assignments)})
 
 
@@ -791,6 +800,10 @@ def upload():
     parse_id    = str(uuid.uuid4())
     _store[parse_id] = {"stops": stops, "flags": flags, "count": len(stops),
                         "new_count": new_count, "twice_count": twice_count}
+    # Attach any assignments that were uploaded before the member list
+    pending = session.pop("pending_assignments", None)
+    if pending:
+        _store[parse_id]["prev_assignments"] = pending
     session["parse_id"] = parse_id
     return jsonify({"count": len(stops), "flags": flags,
                     "new_count": new_count, "twice_count": twice_count})
