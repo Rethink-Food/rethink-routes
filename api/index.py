@@ -101,7 +101,9 @@ def _parse_preferred_days(avail_str: str) -> list:
 # ── Pure helpers (ported from app.py) ─────────────────────────────────────────
 
 def parse_excel(fileobj):
-    wb = openpyxl.load_workbook(fileobj, read_only=True)
+    # read_only=True can truncate early on files with stale dimension metadata
+    # (common with Google Sheets exports). Load fully to guarantee all rows are read.
+    wb = openpyxl.load_workbook(fileobj, data_only=True)
     ws = wb.worksheets[0]
     rows = list(ws.iter_rows(values_only=True))
     wb.close()
