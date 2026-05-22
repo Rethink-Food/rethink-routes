@@ -435,6 +435,20 @@ def run_generation(all_stops, all_flags, distance_cap=MAX_ROUTE_MILES, contact_n
             (r_letter, letter_to_day.get(r_letter, ""))
         )
 
+    # Borough lookup by ZIP prefix — covers all NYC boroughs
+    def _zip_borough(zipcode: str) -> str | None:
+        p3 = zipcode[:3]
+        if p3 in ("100", "101", "102"):  return "Manhattan"
+        if p3 == "104":                  return "Bronx"
+        if p3 == "112":                  return "Brooklyn"
+        if p3 in ("113", "114"):         return "Queens"
+        return None
+
+    # Pre-build borough → route list for fast fallback lookups
+    borough_routes: dict[str, list] = {}
+    for l, n, b, d, z in ROUTES:
+        borough_routes.setdefault(b, []).append((l, n, b, d))
+
     for stop in all_stops:
         addr_key = stop["addr1"].strip().lower()
 
@@ -458,10 +472,24 @@ def run_generation(all_stops, all_flags, distance_cap=MAX_ROUTE_MILES, contact_n
 
         matching = zip_to_routes.get(stop["zipcode"], [])
         if not matching:
-            flags.append(
-                f"Member {stop['member_id']} (zip {stop['zipcode']}) "
-                "not assigned to any route — add zip to ROUTES in rethink_routes.py"
-            )
+            # ZIP not in any route definition — auto-assign to the least-loaded
+            # route in the same borough (determined by ZIP prefix).
+            guessed_borough = _zip_borough(stop["zipcode"])
+            fallback = borough_routes.get(guessed_borough, []) if guessed_borough else []
+            if fallback:
+                best_fb = min(fallback, key=lambda r: len(route_buckets[r[0]]))
+                route_buckets[best_fb[0]].append((stop, best_fb[2]))
+                _register(best_fb[0], addr_key)
+                flags.append(
+                    f"Member {stop['member_id']} (zip {stop['zipcode']}) "
+                    f"auto-assigned to Route {best_fb[0]} ({best_fb[1].replace('_',' ')}) — "
+                    "ZIP not in route definitions, add it to ROUTES to lock this in"
+                )
+            else:
+                flags.append(
+                    f"Member {stop['member_id']} (zip {stop['zipcode']}) "
+                    "could not be assigned — ZIP is outside known NYC boroughs"
+                )
         elif len(matching) == 1:
             route_buckets[matching[0][0]].append((stop, matching[0][2]))
             _register(matching[0][0], addr_key)
