@@ -345,12 +345,26 @@ def _geocode_all(all_stops, geocache, geolocator, zip_to_routes):
             import googlemaps
             gmaps = googlemaps.Client(key=api_key)
 
+            def _geocode_query(stop):
+                """Build a clean geocode query.
+
+                Some spreadsheets embed city/state/ZIP in Address Line 1
+                (e.g. '150-15 Hillside Ave., Jamaica, NY 11432'). Appending
+                location info again produces a malformed query that Google Maps
+                can't resolve. If addr1 already contains 'NY' or a 5-digit ZIP
+                we use it as-is; otherwise we append the known location data.
+                """
+                addr1 = stop["addr1"]
+                if re.search(r"\bNY\b", addr1, re.IGNORECASE) or re.search(r"\b\d{5}\b", addr1):
+                    return addr1
+                return f"{addr1}, New York, NY {stop['zipcode']}"
+
             def _google_one(stop):
                 key = (stop["addr1"], stop["zipcode"])
                 if key in geocache:
                     return stop, geocache[key]
                 try:
-                    results = gmaps.geocode(f"{stop['addr1']}, New York, {stop['zipcode']}")
+                    results = gmaps.geocode(_geocode_query(stop))
                     latlon = None
                     if results:
                         loc = results[0]["geometry"]["location"]
@@ -359,7 +373,9 @@ def _geocode_all(all_stops, geocache, geolocator, zip_to_routes):
                             latlon = (lat, lng)
                 except Exception:
                     latlon = None
-                geocache[key] = latlon
+                # Don't persist None — let the next run retry failed addresses
+                if latlon is not None:
+                    geocache[key] = latlon
                 return stop, latlon
 
             with ThreadPoolExecutor(max_workers=10) as executor:
