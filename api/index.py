@@ -441,7 +441,7 @@ def run_generation(all_stops, all_flags, distance_cap=MAX_ROUTE_MILES, contact_n
         )
 
     # Borough lookup by ZIP prefix — covers all NYC boroughs
-    def _zip_borough(zipcode: str) -> str | None:
+    def _zip_borough(zipcode: str):
         p3 = zipcode[:3]
         if p3 in ("100", "101", "102"):  return "Manhattan"
         if p3 == "104":                  return "Bronx"
