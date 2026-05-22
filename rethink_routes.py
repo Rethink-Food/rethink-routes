@@ -44,8 +44,8 @@ warnings.filterwarnings("ignore", category=UserWarning)
 CACHE_FILE = Path(__file__).parent / "geocode_cache.json"
 
 # Stop-count limits per route
-MAX_STOPS_HARD  = 25    # routes above this are flagged
-MAX_STOPS_SOFT  = 28    # allowed when consecutive stops are densely clustered
+MAX_STOPS_HARD  = 40    # routes above this are flagged
+MAX_STOPS_SOFT  = 44    # allowed when consecutive stops are densely clustered
 CLOSE_STOP_MILES = 0.15 # ~2 city blocks — threshold for "close" stops
 
 # Depot addresses — all routes start here
