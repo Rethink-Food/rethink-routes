@@ -764,12 +764,16 @@ def upload_assignments():
         content = file.read().decode("utf-8-sig")   # strip BOM if present
         reader  = csv.DictReader(io.StringIO(content))
         valid_letters = {l for l, *_ in ROUTES}
-        assignments: dict[str, str] = {}
+        assignments: dict = {}
         for row in reader:
-            mid   = str(row.get("Member ID") or "").strip().replace(".0", "")
-            route = str(row.get("Route")     or "").strip().upper()
+            mid      = str(row.get("Member ID") or "").strip().replace(".0", "")
+            route    = str(row.get("Route")     or "").strip().upper()
+            delivery = str(row.get("Delivery")  or "").strip()  # "First Delivery" / "Second Delivery" / ""
             if mid and route in valid_letters:
-                assignments[mid] = route
+                # Twice-weekly rows are keyed by (member_id, delivery_type) so both
+                # deliveries are preserved independently. Regular rows use member_id alone.
+                key = (mid, delivery) if delivery else mid
+                assignments[key] = route
     except Exception as exc:
         return jsonify({"error": f"Could not parse assignments file: {exc}"}), 400
 
@@ -828,9 +832,14 @@ def generate():
         all_stops = []
         for s in parsed["stops"]:
             s2 = dict(s)
-            # Only override if the member doesn't already have a manual assignment
-            if not s2.get("assigned_route") and s2["member_id"] in prev_assignments:
-                s2["assigned_route"] = prev_assignments[s2["member_id"]]
+            if not s2.get("assigned_route"):
+                mid      = s2["member_id"]
+                delivery = s2.get("delivery_type", "")
+                # Try specific (member_id, delivery_type) key first (twice-weekly),
+                # then fall back to plain member_id key (regular members)
+                route = prev_assignments.get((mid, delivery)) or prev_assignments.get(mid)
+                if route:
+                    s2["assigned_route"] = route
             all_stops.append(s2)
 
     try:
@@ -1061,10 +1070,10 @@ def download_assignments(results_id):
 
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["Member ID", "Route"])
+    w.writerow(["Member ID", "Delivery", "Route"])
     for route in payload["results"]:
         for s in route["stops"]:
-            w.writerow([s["member_id"], route["letter"]])
+            w.writerow([s["member_id"], s.get("delivery_type", ""), route["letter"]])
 
     fname = f"Route_Assignments_{payload['generated_date']}.csv"
     return send_file(
