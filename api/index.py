@@ -476,12 +476,13 @@ def run_generation(all_stops, all_flags, distance_cap=MAX_ROUTE_MILES, contact_n
         )
 
     # Borough lookup by ZIP prefix — covers all NYC boroughs
-    def _zip_borough(zipcode: str):
+    def _zip_borough(zipcode):
         p3 = zipcode[:3]
-        if p3 in ("100", "101", "102"):  return "Manhattan"
-        if p3 == "104":                  return "Bronx"
-        if p3 == "112":                  return "Brooklyn"
-        if p3 in ("113", "114"):         return "Queens"
+        if p3 in ("100", "101", "102"):         return "Manhattan"
+        if p3 in ("104", "105"):                return "Bronx"
+        if p3 == "112":                         return "Brooklyn"
+        if p3 in ("110", "111", "113", "114", "116"):  return "Queens"
+        if p3 == "103":                         return "Brooklyn"  # Staten Island → nearest
         return None
 
     # Pre-build borough → route list for fast fallback lookups
@@ -575,29 +576,38 @@ def run_generation(all_stops, all_flags, distance_cap=MAX_ROUTE_MILES, contact_n
 
     _geocode_all(all_stops, geocache, geolocator, zip_to_routes)
 
-    for stop in all_stops:
-        if stop["latlon"] is None:
-            flags.append(
-                f"Member {stop['member_id']} ({stop['addr1']}, {stop['zipcode']}): "
-                "geocoding failed — stop excluded from map"
-            )
-
     results, kitchen_rows = [], []
 
     for letter, name, borough, day, zips in ROUTES:
         entries = route_buckets[letter]
         if not entries:
             continue
-        geocoded = [e[0] for e in entries if e[0]["latlon"]]
-        if not geocoded:
+
+        all_route_stops = [e[0] for e in entries]
+        geocoded = [s for s in all_route_stops if s["latlon"]]
+        not_geocoded = [s for s in all_route_stops if not s["latlon"]]
+
+        if not geocoded and not not_geocoded:
             continue
 
         depot_end_latlon = depot_bronx_latlon if borough == "Bronx" else depot_other_latlon
         depot_end_info   = DEPOT_BRONX_END    if borough == "Bronx" else DEPOT_OTHER_END
 
-        ordered, orig_dist, opt_dist = optimize_route(
-            geocoded, depot_start_latlon, depot_end_latlon
-        )
+        if geocoded:
+            ordered, orig_dist, opt_dist = optimize_route(
+                geocoded, depot_start_latlon, depot_end_latlon
+            )
+        else:
+            ordered, orig_dist, opt_dist = [], 0.0, 0.0
+
+        # Append non-geocoded stops at the end so they count and appear in manifests
+        if not_geocoded:
+            ordered = ordered + not_geocoded
+            for s in not_geocoded:
+                flags.append(
+                    f"Route {letter}: Member {s['member_id']} ({s['addr1']}) "
+                    "not on map (geocoding failed) but included in manifest"
+                )
 
         limit_warning = check_stop_limit(ordered)
         if limit_warning:
