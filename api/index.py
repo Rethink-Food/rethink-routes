@@ -113,7 +113,9 @@ def parse_excel(fileobj):
     import pandas as pd
 
     try:
-        df = pd.read_excel(fileobj, dtype=str, engine="openpyxl")
+        # Buffer all bytes first — some upload streams don't support full seeking
+        raw = fileobj.read() if hasattr(fileobj, "read") else fileobj
+        df = pd.read_excel(io.BytesIO(raw), dtype=str, engine="openpyxl")
     except Exception as exc:
         return None, [f"Could not read file: {exc}"]
 
